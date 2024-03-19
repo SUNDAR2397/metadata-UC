@@ -1,0 +1,55 @@
+from pyspark.sql import SparkSession
+import re
+from datetime import datetime
+
+# Initialize Spark session
+spark = SparkSession.builder.appName("FileProcessingWithMetadata").getOrCreate()
+
+# Define Unity Catalog and Schema details
+catalog_name = "your_catalog_name"  # Replace with your Unity Catalog name
+schema_name = "bronze"  # Assuming 'bronze' is your schema for the bronze layer
+table_name = "metadata_table"
+metadata_table_path = f"`{catalog_name}`.`{schema_name}`.`{table_name}`"
+
+# ABFS base path
+base_path = "abfss://ABC@<storage-account-name>.dfs.core.windows.net/FILE_PATH/"
+# List all items in the specified directory using dbutils.fs.ls
+files = dbutils.fs.ls(base_path)
+
+# Define a pattern to match your files
+file_pattern = re.compile(r'\d{8}ABC')
+
+# Filter the listed items based on your naming pattern
+files_to_process = [file.name for file in files if file_pattern.match(file.name)]
+
+# Check if the metadata table exists; if not, create it
+if not spark._jsparkSession.catalog().tableExists(catalog_name, schema_name, table_name):
+    schema = "FileName STRING, Status STRING, ProcessedDate TIMESTAMP"
+    spark.sql(f"CREATE TABLE {metadata_table_path} ({schema}) USING DELTA")
+
+# Example function to process your files (define your actual processing logic here)
+def process_file(file_path):
+    # Your file processing logic here
+    pass
+
+# Process files
+for file_name in files_to_process:
+    file_path = base_path + file_name
+    processed_files = spark.read.table(metadata_table_path)
+    
+    if processed_files.filter(processed_files.FileName == file_name).count() == 0:
+        try:
+            process_file(file_path)
+            # Update metadata table with SUCCESS
+            new_entry = spark.createDataFrame([(file_name, "SUCCESS", datetime.now())],
+                                              ["FileName", "Status", "ProcessedDate"])
+            new_entry.write.format("delta").mode("append").saveAsTable(metadata_table_path)
+        except Exception as e:
+            # Update metadata table with FAILED
+            new_entry = spark.createDataFrame([(file_name, "FAILED", datetime.now())],
+                                              ["FileName", "Status", "ProcessedDate"])
+            new_entry.write.format("delta").mode("append").saveAsTable(metadata_table_path)
+            print(f"Failed to process {file_name}: {e}")
+
+# Close Spark session
+spark.stop()
